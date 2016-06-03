@@ -2,6 +2,7 @@
 # -- coding: utf-8 --
 
 import argparse
+import datetime
 import json
 import logging
 import logging.config
@@ -31,6 +32,7 @@ __status__ = 'Prototype'
 _DEFAULT_CONFIG_FILE = 'config.json'
 
 # Constants
+_API_LOW_LIMIT = 4
 _TWEET_LIMIT = 140
 
 # Dict for application configuration
@@ -108,38 +110,88 @@ def main():
         root_logger.error('Twitter API key not configured')
         return
 
-    # Get twitter authentication
-    auth = tweepy.OAuthHandler(_app_cfg['twitter_consumer_key'], _app_cfg['twitter_consumer_secret'])
+    try:
+        # Get twitter authentication
+        auth = tweepy.OAuthHandler(_app_cfg['twitter_consumer_key'], _app_cfg['twitter_consumer_secret'])
 
-    if not _app_cfg['twitter_access_token'] or not _app_cfg['twitter_access_token_secret']:
-        # Get access token
-        root_logger.warning('Attempting to get access token')
+        if not _app_cfg['twitter_access_token'] or not _app_cfg['twitter_access_token_secret']:
+            # Get access token
+            root_logger.warning('Attempting to get access token')
 
-        try:
-            redirect_url = auth.get_authorization_url()
+            try:
+                redirect_url = auth.get_authorization_url()
 
-            print("Access Twitter OAuth URL: {}".format(redirect_url))
+                print("Access Twitter OAuth URL: {}".format(redirect_url))
 
-            request_token = input('Enter request token: ')
+                request_token = input('Enter request token: ')
 
-            [access_token, access_token_secret] = auth.get_access_token(request_token)
+                [access_token, access_token_secret] = auth.get_access_token(request_token)
 
-            print("Access token config: {}".format(json.dumps(
-                {'twitter_access_token': access_token, 'twitter_access_token_secret': access_token_secret},
-                indent=2, separators=(',', ': '))))
-        except tweepy.TweepError:
-            logging.error('Failed to get Twitter request or access token')
+                print("Access token config: {}".format(json.dumps(
+                    {'twitter_access_token': access_token, 'twitter_access_token_secret': access_token_secret},
+                    indent=2, separators=(',', ': '))))
+            except tweepy.TweepError:
+                logging.error('Failed to get Twitter request or access token')
+                return
+
+            root_logger.warning('Save authentication token in configuration')
             return
 
-        root_logger.warning('Save authentication token in configuration')
-        return
+        auth.set_access_token(_app_cfg['twitter_access_token'], _app_cfg['twitter_access_token_secret'])
 
-    auth.set_access_token(_app_cfg['twitter_access_token'], _app_cfg['twitter_access_token_secret'])
+        # Get handle to Twitter API
+        twitter_api = tweepy.API(auth)
 
-    twitter_api = tweepy.API(auth)
-    send_tweet(twitter_api, 'Cake')
+        #if not twitter_api.verify_credentials():
+        #    root_logger.error('Authentication failed')
+        #    return
 
-    root_logger.info('Exiting')
+        limit = twitter_api.rate_limit_status()
+        limit = util.dict_tree_walk(limit, 'remaining')
+
+        for key, val in sorted(limit.items()):
+            reset_time = datetime.datetime.fromtimestamp(val['reset']).strftime('%c')
+
+            if val['remaining'] == 0:
+                root_logger.error("API {} limit hit".format(key))
+            elif val['remaining'] <= _API_LOW_LIMIT:
+                root_logger.warning("API {} limit low".format(key))
+
+            root_logger.info("API {}: {} of {} remaining (reset at: {})".format(key, val['remaining'], val['limit'], reset_time))
+
+        user = twitter_api.me()
+        target = [twitter_api.get_user(user) for user in _app_cfg['tweet']['target']]
+
+        root_logger.info("Authenticated as {} (id: {})".format(user.screen_name, user.id))
+
+        for t in target:
+            root_logger.info("Target {} (id: {})".format(t.screen_name, t.id))
+
+            friendship = twitter_api.show_friendship(source_id=user.id, target_id=t.id)
+
+            if friendship[0].blocking:
+                root_logger.error("User {} blocking {}".format(friendship[0].screen_name, friendship[1].screen_name))
+                return
+
+            if friendship[0].blocked_by:
+                root_logger.error("User {} blocked by {}".format(friendship[1].screen_name, friendship[0].screen_name))
+                return
+
+            if not friendship[0].following:
+                root_logger.warn("User {} not following {}".format(friendship[0].screen_name,
+                                                                   friendship[1].screen_name))
+
+            if not friendship[1].following:
+                root_logger.warn("User {} not followed by {}".format(friendship[0].screen_name,
+                                                                     friendship[1].screen_name))
+
+        # send_tweet(twitter_api, 'Cake')
+
+        # Exit gracefully
+        root_logger.info('Exiting normally')
+    except:
+        root_logger.exception('Unhandled exception', exc_info=True)
+        raise
 
 
 if __name__ == '__main__':
