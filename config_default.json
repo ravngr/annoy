@@ -33,7 +33,7 @@
   "tweet": {
     "format": "{target} {message} {hashtag}",
     "hashtag": [],
-    "target": ["errbufferoverfl"],
+    "target": ["twitter"],
     "target_delimiter": " "
   },
   "twitter_consumer_key": "",
